@@ -3,19 +3,11 @@ from dash import dcc, html
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
+import base64
+import io
 
-# -----------------------------
-# LOAD CSV + PARSE SESSIONS
-# -----------------------------
-CSV_PATH = "dynon_log.csv"   # Upload your CSV to the repo with this name
-
-df = pd.read_csv(CSV_PATH)
-
-# Parse datetime
-df["time_parsed"] = pd.to_datetime(df["GPS Date & Time"], errors="coerce")
-
-# Add frame index for animation
-df["frame_index"] = range(len(df))
+app = dash.Dash(__name__)
+server = app.server
 
 # -----------------------------
 # SESSION SPLITTING
@@ -37,8 +29,6 @@ def split_sessions(df):
 
     df["session_id"] = session_ids
     return [df[df["session_id"] == sid].copy() for sid in sorted(df["session_id"].unique())]
-
-sessions = split_sessions(df)
 
 # -----------------------------
 # FIGURE BUILDERS
@@ -105,38 +95,95 @@ def make_all_numeric_graphs(session_df):
     return figs
 
 # -----------------------------
-# DASH APP
+# DASH LAYOUT
 # -----------------------------
-app = dash.Dash(__name__)
-
-session_options = [{"label": f"Session {i}", "value": i} for i in range(len(sessions))]
-
 app.layout = html.Div([
     html.H1("Dynon CloudAhoy‑Style Viewer"),
 
-    dcc.Dropdown(
+    html.H3("Upload your Dynon CSV file"),
+    dcc.Upload(
+        id="upload-data",
+        children=html.Div([
+            "Drag and Drop or Click to Upload"
+        ]),
+        style={
+            "width": "100%",
+            "height": "60px",
+            "lineHeight": "60px",
+            "borderWidth": "2px",
+            "borderStyle": "dashed",
+            "borderRadius": "10px",
+            "textAlign": "center",
+            "margin": "10px"
+        },
+        multiple=False
+    ),
+
+    html.Div(id="session-select-container"),
+    html.Div(id="tab-container"),
+    html.Div(id="tab-content")
+])
+
+# -----------------------------
+# CALLBACK: LOAD CSV + BUILD UI
+# -----------------------------
+@app.callback(
+    dash.Output("session-select-container", "children"),
+    dash.Output("tab-container", "children"),
+    dash.Input("upload-data", "contents")
+)
+def load_csv(contents):
+    if contents is None:
+        return "", ""
+
+    content_type, content_string = contents.split(',')
+    decoded = base64.b64decode(content_string)
+    df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
+
+    df["time_parsed"] = pd.to_datetime(df["GPS Date & Time"], errors="coerce")
+    df["frame_index"] = range(len(df))
+
+    sessions = split_sessions(df)
+
+    session_options = [{"label": f"Session {i}", "value": i} for i in range(len(sessions))]
+
+    dropdown = dcc.Dropdown(
         id="session-select",
         options=session_options,
         value=0,
         clearable=False
-    ),
+    )
 
-    dcc.Tabs(id="tabs", value="flight", children=[
+    tabs = dcc.Tabs(id="tabs", value="flight", children=[
         dcc.Tab(label="Flight View", value="flight"),
         dcc.Tab(label="3D Path", value="3d"),
         dcc.Tab(label="Attitude", value="attitude"),
         dcc.Tab(label="All Data Graphs", value="allgraphs"),
-    ]),
+    ])
 
-    html.Div(id="tab-content")
-])
+    return dropdown, tabs
 
+# -----------------------------
+# CALLBACK: RENDER TAB CONTENT
+# -----------------------------
 @app.callback(
     dash.Output("tab-content", "children"),
+    dash.Input("upload-data", "contents"),
     dash.Input("session-select", "value"),
     dash.Input("tabs", "value")
 )
-def render_tab(session_id, tab):
+def render_tab(contents, session_id, tab):
+    if contents is None:
+        return ""
+
+    content_type, content_string = contents.split(',')
+    decoded = base64.b64decode(content_string)
+    df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
+
+    df["time_parsed"] = pd.to_datetime(df["GPS Date & Time"], errors="coerce")
+    df["frame_index"] = range(len(df))
+
+    sessions = split_sessions(df)
     session_df = sessions[session_id]
 
     if tab == "flight":
@@ -153,7 +200,6 @@ def render_tab(session_id, tab):
 
     return "No content"
 
-server = app.server
 
 if __name__ == "__main__":
     app.run_server(debug=True)
